@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { rmSync } from "node:fs";
 
 export type Db = Database.Database;
 
@@ -56,4 +57,17 @@ export function seedDatabase(db: Db): void {
     user.run("Bruno Díaz", "bruno@example.com");
   });
   seed();
+}
+
+/** Recreates a file-backed database and loads the deterministic V0 seed. */
+export function resetAndSeedDatabase(filename: string): Db {
+  if (filename === ":memory:") {
+    const db = createDatabase();
+    seedDatabase(db);
+    return db;
+  }
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(`${filename}${suffix}`, { force: true });
+  const db = createDatabase(filename);
+  seedDatabase(db);
+  return db;
 }

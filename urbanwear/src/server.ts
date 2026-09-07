@@ -1,7 +1,9 @@
 import { createApp } from "./app.js";
+import { createClock } from "./clock.js";
+import { getConfig } from "./config.js";
 import { createDatabase, seedDatabase } from "./db.js";
 
-const db = createDatabase(process.env.DATABASE_PATH ?? "urbanwear.db");
+const config = getConfig();
+const db = createDatabase(config.databasePath);
 seedDatabase(db);
-const port = Number(process.env.PORT ?? 3000);
-createApp(db).listen(port, () => console.log(`UrbanWear API listening on port ${port}`));
+createApp(db, createClock(config.testNow)).listen(config.port, () => console.log(`UrbanWear API listening on port ${config.port}`));

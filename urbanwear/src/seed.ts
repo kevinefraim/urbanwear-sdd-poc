@@ -1,6 +1,7 @@
+import { getConfig } from "./config.js";
 import { createDatabase, seedDatabase } from "./db.js";
 
-const db = createDatabase(process.env.DATABASE_PATH ?? "urbanwear.db");
+const db = createDatabase(getConfig().databasePath);
 seedDatabase(db);
 db.close();
 console.log("Seed completed");

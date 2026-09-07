@@ -1,9 +1,10 @@
 import express from "express";
+import { createClock, toSqliteTimestamp, type Clock } from "./clock.js";
 import type { Db } from "./db.js";
 
 type Product = { id: number; name: string; price: number; categoryId: number };
 
-export function createApp(db: Db) {
+export function createApp(db: Db, clock: Clock = createClock()) {
   const app = express();
   app.use(express.json());
 
@@ -64,7 +65,8 @@ export function createApp(db: Db) {
       const items = cart(userId) as Array<{ price: number; quantity: number }>;
       if (items.length === 0) return null;
       const subtotal = Number(items.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2));
-      const result = db.prepare("INSERT INTO orders (user_id, subtotal, total) VALUES (?, ?, ?)").run(userId, subtotal, subtotal);
+      const result = db.prepare("INSERT INTO orders (user_id, subtotal, total, created_at) VALUES (?, ?, ?, ?)")
+        .run(userId, subtotal, subtotal, toSqliteTimestamp(clock.now()));
       db.prepare("DELETE FROM cart_items WHERE user_id = ?").run(userId);
       return { id: Number(result.lastInsertRowid), userId, subtotal, total: subtotal };
     });

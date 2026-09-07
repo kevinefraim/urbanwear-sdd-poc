@@ -6,6 +6,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "seed": "tsx src/seed.ts",
+    "reset:seed": "tsx src/reset.ts",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
