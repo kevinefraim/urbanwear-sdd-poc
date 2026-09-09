@@ -35,6 +35,27 @@ export function createDatabase(filename = ":memory:"): Db {
       total REAL NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS coupons (
+      id INTEGER PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL CHECK(type IN ('percentage', 'fixed')),
+      value REAL NOT NULL CHECK(value > 0),
+      valid_from TEXT NOT NULL,
+      valid_until TEXT NOT NULL,
+      minimum_amount REAL NOT NULL CHECK(minimum_amount >= 0),
+      CHECK(valid_from <= valid_until)
+    );
+    CREATE TABLE IF NOT EXISTS coupon_categories (
+      coupon_id INTEGER NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+      category_id INTEGER NOT NULL REFERENCES categories(id),
+      PRIMARY KEY (coupon_id, category_id)
+    );
+    CREATE TABLE IF NOT EXISTS coupon_usages (
+      coupon_id INTEGER NOT NULL REFERENCES coupons(id),
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+      PRIMARY KEY (coupon_id, user_id)
+    );
   `);
   return db;
 }
