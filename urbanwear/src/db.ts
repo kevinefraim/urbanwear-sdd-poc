@@ -32,10 +32,39 @@ export function createDatabase(filename = ":memory:"): Db {
       id INTEGER PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),
       subtotal REAL NOT NULL,
+      discount REAL NOT NULL DEFAULT 0,
       total REAL NOT NULL,
+      coupon_code TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS coupons (
+      code TEXT PRIMARY KEY,
+      type TEXT NOT NULL CHECK(type IN ('percentage', 'fixed')),
+      value REAL NOT NULL CHECK(value > 0),
+      valid_from TEXT NOT NULL,
+      valid_until TEXT NOT NULL,
+      minimum_amount REAL NOT NULL CHECK(minimum_amount >= 0)
+    );
+    CREATE TABLE IF NOT EXISTS coupon_categories (
+      coupon_code TEXT NOT NULL REFERENCES coupons(code) ON DELETE CASCADE,
+      category_id INTEGER NOT NULL REFERENCES categories(id),
+      PRIMARY KEY (coupon_code, category_id)
+    );
+    CREATE TABLE IF NOT EXISTS coupon_usages (
+      coupon_code TEXT NOT NULL REFERENCES coupons(code),
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      order_id INTEGER NOT NULL REFERENCES orders(id),
+      used_at TEXT NOT NULL,
+      PRIMARY KEY (coupon_code, user_id)
+    );
   `);
+  const orderColumns = db.prepare("PRAGMA table_info(orders)").all() as Array<{ name: string }>;
+  if (!orderColumns.some((column) => column.name === "discount")) {
+    db.exec("ALTER TABLE orders ADD COLUMN discount REAL NOT NULL DEFAULT 0");
+  }
+  if (!orderColumns.some((column) => column.name === "coupon_code")) {
+    db.exec("ALTER TABLE orders ADD COLUMN coupon_code TEXT");
+  }
   return db;
 }
 

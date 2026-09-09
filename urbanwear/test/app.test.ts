@@ -62,3 +62,46 @@ test("environment configuration and reset seed are reproducible", async (t) => {
   const order = db.prepare("SELECT created_at FROM orders WHERE id = 1").get() as { created_at: string };
   assert.equal(order.created_at, "2026-01-02 03:04:05");
 });
+
+test("coupons discount eligible cart items and are single-use per user", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-15T12:00:00.000Z"));
+  const coupon = {
+    code: "SNEAKERS20", type: "percentage", value: 20,
+    validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.000Z",
+    minimumAmount: 100, categoryIds: [1],
+  };
+
+  await request(app).post("/coupons").send(coupon).expect(201);
+  const found = await request(app).get("/coupons/SNEAKERS20").expect(200);
+  assert.deepEqual(found.body, { ...coupon, validUntil: "2026-06-30T23:59:59.000Z" });
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 2 }).expect(201);
+  await request(app).post("/cart/1/items").send({ productId: 4, quantity: 1 }).expect(201);
+  const checkout = await request(app).post("/checkout/1").send({ couponCode: "SNEAKERS20" }).expect(201);
+  assert.deepEqual(checkout.body, {
+    id: 1, userId: 1, subtotal: 309.97, discount: 36, total: 273.97, couponCode: "SNEAKERS20",
+  });
+
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 2 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "SNEAKERS20" }).expect(400);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM orders").get() as { count: number }).count, 1);
+  assert.equal((await request(app).get("/cart/1")).body.items.length, 1);
+});
+
+test("coupon validation rejects unavailable coupons without modifying the cart", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-15T12:00:00.000Z"));
+  await request(app).post("/coupons").send({
+    code: "FIXED", type: "fixed", value: 500,
+    validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.000Z",
+    minimumAmount: 100, categoryIds: [],
+  }).expect(201);
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "FIXED" }).expect(400);
+  assert.equal((await request(app).get("/cart/1")).body.items.length, 1);
+  await request(app).post("/checkout/1").send({ couponCode: "UNKNOWN" }).expect(400);
+});
