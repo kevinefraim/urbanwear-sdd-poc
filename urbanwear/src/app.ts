@@ -14,6 +14,8 @@ type Coupon = {
 };
 
 const money = (amount: number) => Number(amount.toFixed(2));
+const MAX_COUPON_USES_PER_USER = 3;
+const MAX_COUPON_USES_PER_USER_PER_UTC_DAY = 1;
 const couponDate = (value: unknown, endOfDay = false): Date | undefined => {
   if (typeof value !== "string") return undefined;
   const date = new Date(endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -136,19 +138,26 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     const checkout = db.transaction(() => {
       const items = checkoutCart(userId);
       if (items.length === 0) return null;
+      const completedAt = clock.now();
       const subtotal = money(items.reduce((sum, item) => sum + item.price * item.quantity, 0));
       let coupon: Coupon | undefined;
       let discount = 0;
       if (couponCode) {
         const fullCoupon = couponWithCategories(couponCode.trim());
-        const now = clock.now();
+        const now = completedAt;
         if (!fullCoupon || now < new Date(fullCoupon.validFrom) || now > new Date(fullCoupon.validUntil)) {
           return { error: "Coupon is not valid" };
         }
         if (subtotal < fullCoupon.minimumAmount) return { error: "Coupon minimum amount not reached" };
-        if (db.prepare("SELECT 1 FROM coupon_usages WHERE coupon_code = ? AND user_id = ?").get(fullCoupon.code, userId)) {
-          return { error: "Coupon already used by this user" };
-        }
+        const totalUses = db.prepare("SELECT COUNT(*) AS count FROM coupon_usages WHERE coupon_code = ? AND user_id = ?")
+          .get(fullCoupon.code, userId) as { count: number };
+        if (totalUses.count >= MAX_COUPON_USES_PER_USER) return { error: "Coupon usage limit reached" };
+        const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const nextDayStart = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+        const dailyUses = db.prepare(`SELECT COUNT(*) AS count FROM coupon_usages
+          WHERE coupon_code = ? AND user_id = ? AND used_at >= ? AND used_at < ?`)
+          .get(fullCoupon.code, userId, toSqliteTimestamp(dayStart), toSqliteTimestamp(nextDayStart)) as { count: number };
+        if (dailyUses.count >= MAX_COUPON_USES_PER_USER_PER_UTC_DAY) return { error: "Coupon daily usage limit reached" };
         const applicableItems = fullCoupon.categoryIds.length === 0
           ? items
           : items.filter((item) => fullCoupon.categoryIds.includes(item.categoryId));
@@ -160,9 +169,9 @@ export function createApp(db: Db, clock: Clock = createClock()) {
       }
       const total = money(subtotal - discount);
       const result = db.prepare("INSERT INTO orders (user_id, subtotal, discount, total, coupon_code, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(userId, subtotal, discount, total, coupon?.code ?? null, toSqliteTimestamp(clock.now()));
+        .run(userId, subtotal, discount, total, coupon?.code ?? null, toSqliteTimestamp(completedAt));
       if (coupon) db.prepare("INSERT INTO coupon_usages (coupon_code, user_id, order_id, used_at) VALUES (?, ?, ?, ?)")
-        .run(coupon.code, userId, Number(result.lastInsertRowid), toSqliteTimestamp(clock.now()));
+        .run(coupon.code, userId, Number(result.lastInsertRowid), toSqliteTimestamp(completedAt));
       db.prepare("DELETE FROM cart_items WHERE user_id = ?").run(userId);
       return coupon
         ? { id: Number(result.lastInsertRowid), userId, subtotal, discount, total, couponCode: coupon.code }

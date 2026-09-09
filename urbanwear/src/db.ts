@@ -54,9 +54,10 @@ export function createDatabase(filename = ":memory:"): Db {
       coupon_code TEXT NOT NULL REFERENCES coupons(code),
       user_id INTEGER NOT NULL REFERENCES users(id),
       order_id INTEGER NOT NULL REFERENCES orders(id),
-      used_at TEXT NOT NULL,
-      PRIMARY KEY (coupon_code, user_id)
+      used_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS coupon_usages_coupon_user_used_at
+      ON coupon_usages (coupon_code, user_id, used_at);
   `);
   const orderColumns = db.prepare("PRAGMA table_info(orders)").all() as Array<{ name: string }>;
   if (!orderColumns.some((column) => column.name === "discount")) {
@@ -64,6 +65,28 @@ export function createDatabase(filename = ":memory:"): Db {
   }
   if (!orderColumns.some((column) => column.name === "coupon_code")) {
     db.exec("ALTER TABLE orders ADD COLUMN coupon_code TEXT");
+  }
+  const usageColumns = db.prepare("PRAGMA table_info(coupon_usages)").all() as Array<{ name: string; pk: number }>;
+  // V1 made (coupon_code, user_id) unique. Rebuild it so every successful
+  // checkout remains part of the usage history.
+  if (usageColumns.some((column) => column.name === "coupon_code" && column.pk > 0)
+    && usageColumns.some((column) => column.name === "user_id" && column.pk > 0)) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE coupon_usages_v2 (
+          coupon_code TEXT NOT NULL REFERENCES coupons(code),
+          user_id INTEGER NOT NULL REFERENCES users(id),
+          order_id INTEGER NOT NULL REFERENCES orders(id),
+          used_at TEXT NOT NULL
+        );
+        INSERT INTO coupon_usages_v2 (coupon_code, user_id, order_id, used_at)
+          SELECT coupon_code, user_id, order_id, used_at FROM coupon_usages;
+        DROP TABLE coupon_usages;
+        ALTER TABLE coupon_usages_v2 RENAME TO coupon_usages;
+        CREATE INDEX coupon_usages_coupon_user_used_at
+          ON coupon_usages (coupon_code, user_id, used_at);
+      `);
+    })();
   }
   return db;
 }
