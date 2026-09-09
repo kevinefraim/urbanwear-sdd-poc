@@ -2,12 +2,13 @@
   "name": "urbanwear-v0",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "seed": "tsx src/seed.ts",
     "reset:seed": "tsx src/reset.ts",
-    "test": "tsx --test test/**/*.test.ts"
+    "test": "tsx --test"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",

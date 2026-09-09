@@ -1,10 +1,14 @@
 # UrbanWear V0
 
 ```bash
-pnpm install
-pnpm reset:seed
-pnpm start
+corepack pnpm install
+corepack pnpm reset:seed
+corepack pnpm start
 ```
+
+El proyecto fija pnpm `12.3.4` mediante Corepack. Para ejecutar las pruebas de
+forma reproducible, usar `corepack pnpm test`; una vez preparada esa versión,
+Corepack no necesita consultar el registro para elegir una versión de pnpm.
 
 The following environment variables make local runs reproducible:
 
