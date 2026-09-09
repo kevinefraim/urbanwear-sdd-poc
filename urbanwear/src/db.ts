@@ -50,6 +50,11 @@ export function createDatabase(filename = ":memory:"): Db {
       category_id INTEGER NOT NULL REFERENCES categories(id),
       PRIMARY KEY (coupon_code, category_id)
     );
+    CREATE TABLE IF NOT EXISTS coupon_allowed_users (
+      coupon_code TEXT NOT NULL REFERENCES coupons(code) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      PRIMARY KEY (coupon_code, user_id)
+    );
     CREATE TABLE IF NOT EXISTS coupon_usages (
       coupon_code TEXT NOT NULL REFERENCES coupons(code),
       user_id INTEGER NOT NULL REFERENCES users(id),

@@ -67,13 +67,18 @@ test("environment configuration and reset seed are reproducible", async (t) => {
 test("database migration retains legacy coupon usage history while allowing reuse", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "urbanwear-legacy-"));
   const filename = join(directory, "urbanwear.db");
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let migrated: ReturnType<typeof createDatabase> | undefined;
+  t.after(() => {
+    migrated?.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
   const initial = createDatabase(filename);
   seedDatabase(initial);
   initial.close();
 
   const legacy = new Database(filename);
   legacy.exec(`
+    DROP TABLE coupon_allowed_users;
     DROP TABLE coupon_usages;
     CREATE TABLE coupon_usages (
       coupon_code TEXT NOT NULL REFERENCES coupons(code),
@@ -91,10 +96,10 @@ test("database migration retains legacy coupon usage history while allowing reus
     .run("LEGACY", 1, order.lastInsertRowid, "2026-06-15 12:00:00");
   legacy.close();
 
-  const migrated = createDatabase(filename);
-  t.after(() => migrated.close());
+  migrated = createDatabase(filename);
   assert.equal((migrated.prepare("SELECT COUNT(*) AS count FROM coupon_usages WHERE coupon_code = 'LEGACY'").get() as { count: number }).count, 1);
   assert.ok((migrated.prepare("PRAGMA table_info(coupon_usages)").all() as Array<{ pk: number }>).every((column) => column.pk === 0));
+  assert.ok((migrated.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coupon_allowed_users'").get()));
 });
 
 test("coupons discount eligible cart items", async (t) => {
@@ -118,6 +123,48 @@ test("coupons discount eligible cart items", async (t) => {
     id: 1, userId: 1, subtotal: 309.97, discount: 36, total: 273.97, couponCode: "SNEAKERS20",
   });
 
+});
+
+test("segmented coupons can only be used by their allowed users", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-15T12:00:00.000Z"));
+  const coupon = {
+    code: "ANAONLY", type: "fixed", value: 10,
+    validFrom: "2026-06-01", validUntil: "2026-06-30", minimumAmount: 0,
+    categoryIds: [], allowedUserIds: [1],
+  };
+
+  await request(app).post("/coupons").send(coupon).expect(201).expect(({ body }) => {
+    assert.deepEqual(body, { ...coupon, validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.999Z" });
+  });
+  await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/2").send({ couponCode: "ANAONLY" }).expect(400);
+  assert.equal((await request(app).get("/cart/2")).body.items.length, 1);
+
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  const checkout = await request(app).post("/checkout/1").send({ couponCode: "ANAONLY" }).expect(201);
+  assert.equal(checkout.body.discount, 10);
+});
+
+test("coupon segmentation validates allowed users and preserves general coupons", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-15T12:00:00.000Z"));
+  const baseCoupon = {
+    code: "GENERAL", type: "fixed", value: 10,
+    validFrom: "2026-06-01", validUntil: "2026-06-30", minimumAmount: 0, categoryIds: [],
+  };
+
+  await request(app).post("/coupons").send({ ...baseCoupon, allowedUserIds: [999] }).expect(400);
+  await request(app).post("/coupons").send({ ...baseCoupon, allowedUserIds: [1, 1] }).expect(400);
+  await request(app).post("/coupons").send(baseCoupon).expect(201).expect(({ body }) => {
+    assert.deepEqual(body, { ...baseCoupon, validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.999Z" });
+  });
+  await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/2").send({ couponCode: "GENERAL" }).expect(201);
 });
 
 test("coupons allow three successful uses, at most once per UTC day, and retain their history", async (t) => {
