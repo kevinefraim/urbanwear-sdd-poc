@@ -43,7 +43,9 @@ export function createDatabase(filename = ":memory:"): Db {
       value REAL NOT NULL CHECK(value > 0),
       valid_from TEXT NOT NULL,
       valid_until TEXT NOT NULL,
-      minimum_amount REAL NOT NULL CHECK(minimum_amount >= 0)
+      minimum_amount REAL NOT NULL CHECK(minimum_amount >= 0),
+      active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+      max_uses_per_user INTEGER NOT NULL DEFAULT 3 CHECK(max_uses_per_user >= 0)
     );
     CREATE TABLE IF NOT EXISTS coupon_categories (
       coupon_code TEXT NOT NULL REFERENCES coupons(code) ON DELETE CASCADE,
@@ -63,7 +65,22 @@ export function createDatabase(filename = ":memory:"): Db {
     );
     CREATE INDEX IF NOT EXISTS coupon_usages_coupon_user_used_at
       ON coupon_usages (coupon_code, user_id, used_at);
+    CREATE TABLE IF NOT EXISTS coupon_scheduled_updates (
+      id INTEGER PRIMARY KEY,
+      coupon_code TEXT NOT NULL REFERENCES coupons(code),
+      effective_from TEXT NOT NULL,
+      changes TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS coupon_scheduled_updates_coupon_effective
+      ON coupon_scheduled_updates (coupon_code, effective_from, id);
   `);
+  const couponColumns = db.prepare("PRAGMA table_info(coupons)").all() as Array<{ name: string }>;
+  if (!couponColumns.some((column) => column.name === "active")) {
+    db.exec("ALTER TABLE coupons ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1))");
+  }
+  if (!couponColumns.some((column) => column.name === "max_uses_per_user")) {
+    db.exec("ALTER TABLE coupons ADD COLUMN max_uses_per_user INTEGER NOT NULL DEFAULT 3 CHECK(max_uses_per_user >= 0)");
+  }
   const orderColumns = db.prepare("PRAGMA table_info(orders)").all() as Array<{ name: string }>;
   if (!orderColumns.some((column) => column.name === "discount")) {
     db.exec("ALTER TABLE orders ADD COLUMN discount REAL NOT NULL DEFAULT 0");

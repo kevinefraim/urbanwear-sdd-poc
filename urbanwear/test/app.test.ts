@@ -115,7 +115,7 @@ test("coupons discount eligible cart items", async (t) => {
 
   await request(app).post("/coupons").send(coupon).expect(201);
   const found = await request(app).get("/coupons/SNEAKERS20").expect(200);
-  assert.deepEqual(found.body, { ...coupon, validUntil: "2026-06-30T23:59:59.000Z" });
+  assert.deepEqual(found.body, { ...coupon, validUntil: "2026-06-30T23:59:59.000Z", active: true, maxUsesPerUser: 3 });
   await request(app).post("/cart/1/items").send({ productId: 1, quantity: 2 }).expect(201);
   await request(app).post("/cart/1/items").send({ productId: 4, quantity: 1 }).expect(201);
   const checkout = await request(app).post("/checkout/1").send({ couponCode: "SNEAKERS20" }).expect(201);
@@ -137,7 +137,7 @@ test("segmented coupons can only be used by their allowed users", async (t) => {
   };
 
   await request(app).post("/coupons").send(coupon).expect(201).expect(({ body }) => {
-    assert.deepEqual(body, { ...coupon, validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.999Z" });
+    assert.deepEqual(body, { ...coupon, validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.999Z", active: true, maxUsesPerUser: 3 });
   });
   await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
   await request(app).post("/checkout/2").send({ couponCode: "ANAONLY" }).expect(400);
@@ -161,7 +161,7 @@ test("coupon segmentation validates allowed users and preserves general coupons"
   await request(app).post("/coupons").send({ ...baseCoupon, allowedUserIds: [999] }).expect(400);
   await request(app).post("/coupons").send({ ...baseCoupon, allowedUserIds: [1, 1] }).expect(400);
   await request(app).post("/coupons").send(baseCoupon).expect(201).expect(({ body }) => {
-    assert.deepEqual(body, { ...baseCoupon, validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.999Z" });
+    assert.deepEqual(body, { ...baseCoupon, validFrom: "2026-06-01T00:00:00.000Z", validUntil: "2026-06-30T23:59:59.999Z", active: true, maxUsesPerUser: 3 });
   });
   await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
   await request(app).post("/checkout/2").send({ couponCode: "GENERAL" }).expect(201);
@@ -225,4 +225,42 @@ test("a date-only validUntil remains valid through the end of that day", async (
   await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
   const checkout = await request(app).post("/checkout/1").send({ couponCode: "LASTDAY" }).expect(201);
   assert.equal(checkout.body.discount, 10);
+});
+
+test("coupon patches are partial, preserve usage history, and can be scheduled", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  let now = new Date("2026-06-15T12:00:00.000Z");
+  const app = createApp(db, { now: () => new Date(now) });
+  await request(app).post("/coupons").send({
+    code: "EVOLVE", type: "fixed", value: 10,
+    validFrom: "2026-06-01", validUntil: "2026-06-30", minimumAmount: 0, categoryIds: [],
+  }).expect(201);
+
+  await request(app).patch("/coupons/EVOLVE").send({ active: false }).expect(200)
+    .expect(({ body }) => assert.equal(body.active, false));
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "EVOLVE" }).expect(400);
+
+  await request(app).patch("/coupons/EVOLVE").send({
+    active: true, value: 20, maxUsesPerUser: 1, effectiveFrom: "2026-06-16T00:00:00.000Z",
+  }).expect(200).expect(({ body }) => {
+    assert.equal(body.active, false);
+    assert.equal(body.value, 10);
+  });
+  await request(app).patch("/coupons/EVOLVE").send({
+    minimumAmount: 50, effectiveFrom: "2026-06-17T00:00:00.000Z",
+  }).expect(200);
+  now = new Date("2026-06-16T00:00:00.000Z");
+  const activated = await request(app).get("/coupons/EVOLVE").expect(200);
+  assert.equal(activated.body.active, true);
+  assert.equal(activated.body.value, 20);
+  assert.equal(activated.body.maxUsesPerUser, 1);
+  await request(app).post("/checkout/1").send({ couponCode: "EVOLVE" }).expect(201);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM coupon_usages WHERE coupon_code = ?").get("EVOLVE") as { count: number }).count, 1);
+  now = new Date("2026-06-17T00:00:00.000Z");
+  assert.equal((await request(app).get("/coupons/EVOLVE")).body.minimumAmount, 50);
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "EVOLVE" }).expect(400);
 });
