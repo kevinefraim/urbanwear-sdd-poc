@@ -145,3 +145,17 @@ test("percentage coupons are bounded and validUntil is inclusive to the instant"
   assert.equal(checkout.body.discount, 89.99);
   assert.equal(checkout.body.total, 0);
 });
+
+test("a date-only validUntil remains valid through its entire UTC calendar day", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-09-10T23:59:59.999Z"));
+  await request(app).post("/coupons").send({
+    code: "LASTDAY", type: "fixed", value: 10,
+    validFrom: "2026-09-01", validUntil: "2026-09-10", minimumAmount: 0, categoryIds: [],
+  }).expect(201);
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  const checkout = await request(app).post("/checkout/1").send({ couponCode: "LASTDAY" }).expect(201);
+  assert.equal(checkout.body.discount, 10);
+});

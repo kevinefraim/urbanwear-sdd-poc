@@ -17,7 +17,7 @@ Esta especificación reemplaza la exclusión de cupones de V0. Los comportamient
 
 Recibe todos los campos `code`, `type`, `value`, `validFrom`, `validUntil`, `minimumAmount` y `categoryIds`. Crea el cupón y devuelve `201` con su representación. El código debe ser único; los valores monetarios y el valor del cupón fijo son positivos (el mínimo puede ser cero); un cupón `percentage` debe tener un valor entre 1 y 100, ambos inclusive. Las fechas deben ser válidas y ordenadas, y todas las categorías indicadas deben existir.
 
-Una lista vacía de categorías significa que el cupón puede descontar cualquier producto. Las fechas se guardan y comparan como instantes UTC con precisión de milisegundos; ambos límites de vigencia son inclusivos. En particular, un checkout realizado exactamente en `validUntil` puede aplicar el cupón.
+Una lista vacía de categorías significa que el cupón puede descontar cualquier producto. Las fechas se guardan y comparan como instantes UTC con precisión de milisegundos; ambos límites de vigencia son inclusivos. En particular, un checkout realizado exactamente en `validUntil` puede aplicar el cupón. Si `validUntil` se recibe como una fecha sin hora (`YYYY-MM-DD`), representa las `23:59:59.999Z` de ese mismo día, por lo que el cupón conserva vigencia durante todo el día calendario.
 
 ### GET /coupons/:code
 

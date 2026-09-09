@@ -44,9 +44,10 @@ export function createApp(db: Db, clock: Clock = createClock()) {
       .all(row.id) as Array<{ id: number }>;
     return { ...row, categoryIds: categoryIds.map((category) => category.id) };
   };
-  const parseTimestamp = (value: unknown): string | undefined => {
+  const parseTimestamp = (value: unknown, endOfDay = false): string | undefined => {
     if (typeof value !== "string" || !value.trim()) return undefined;
-    const date = new Date(value);
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const date = new Date(dateOnly && endOfDay ? `${value}T23:59:59.999Z` : value);
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   };
 
@@ -78,7 +79,7 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     const { code, type, value, validFrom, validUntil, minimumAmount, categoryIds } = req.body ?? {};
     const normalizedCode = typeof code === "string" ? code.trim() : "";
     const from = parseTimestamp(validFrom);
-    const until = parseTimestamp(validUntil);
+    const until = parseTimestamp(validUntil, true);
     const validCategories = Array.isArray(categoryIds) && categoryIds.every(Number.isInteger);
     const distinctCategoryIds = validCategories ? [...new Set(categoryIds as number[])] : [];
     if (!normalizedCode || (type !== "percentage" && type !== "fixed") || !Number.isFinite(value) || value <= 0 ||
