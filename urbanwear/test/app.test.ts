@@ -127,3 +127,21 @@ test("coupon validation preserves the cart when a coupon cannot apply", async (t
     code: "INVALID", type: "percent", value: 10, validFrom: "bad", validUntil: "bad", minimumAmount: -1, categoryIds: [999],
   }).expect(400);
 });
+
+test("percentage coupons are bounded and validUntil is inclusive to the instant", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-01T12:00:00.500Z"));
+  const commonFields = {
+    validFrom: "2026-06-01T12:00:00.500Z", validUntil: "2026-06-01T12:00:00.500Z",
+    minimumAmount: 0, categoryIds: [],
+  };
+  await request(app).post("/coupons").send({ code: "ZERO", type: "percentage", value: 0, ...commonFields }).expect(400);
+  await request(app).post("/coupons").send({ code: "OVER", type: "percentage", value: 100.01, ...commonFields }).expect(400);
+  await request(app).post("/coupons").send({ code: "FULL", type: "percentage", value: 100, ...commonFields }).expect(201);
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  const checkout = await request(app).post("/checkout/1").send({ couponCode: "FULL" }).expect(201);
+  assert.equal(checkout.body.discount, 89.99);
+  assert.equal(checkout.body.total, 0);
+});

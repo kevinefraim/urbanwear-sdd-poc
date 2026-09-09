@@ -47,7 +47,7 @@ export function createApp(db: Db, clock: Clock = createClock()) {
   const parseTimestamp = (value: unknown): string | undefined => {
     if (typeof value !== "string" || !value.trim()) return undefined;
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? undefined : toSqliteTimestamp(date);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   };
 
   app.get("/products", (_req, res) => {
@@ -82,6 +82,7 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     const validCategories = Array.isArray(categoryIds) && categoryIds.every(Number.isInteger);
     const distinctCategoryIds = validCategories ? [...new Set(categoryIds as number[])] : [];
     if (!normalizedCode || (type !== "percentage" && type !== "fixed") || !Number.isFinite(value) || value <= 0 ||
+      (type === "percentage" && (value < 1 || value > 100)) ||
       !from || !until || from > until || !Number.isFinite(minimumAmount) || minimumAmount < 0 || !validCategories) {
       return res.status(400).json({ error: "Invalid coupon fields" });
     }
@@ -146,8 +147,10 @@ export function createApp(db: Db, clock: Clock = createClock()) {
       if (requestedCouponCode) {
         coupon = couponByCode(requestedCouponCode);
         if (!coupon) throw new Error("Coupon not found");
-        const now = toSqliteTimestamp(clock.now());
-        if (now < coupon.validFrom || now > coupon.validUntil) throw new Error("Coupon is not currently valid");
+        const now = clock.now().getTime();
+        const validFrom = new Date(coupon.validFrom).getTime();
+        const validUntil = new Date(coupon.validUntil).getTime();
+        if (now < validFrom || now > validUntil) throw new Error("Coupon is not currently valid");
         if (db.prepare("SELECT 1 FROM coupon_usages WHERE coupon_id = ? AND user_id = ?").get(coupon.id, userId)) {
           throw new Error("Coupon has already been used by this user");
         }
