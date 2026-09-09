@@ -105,3 +105,17 @@ test("coupon validation rejects unavailable coupons without modifying the cart",
   assert.equal((await request(app).get("/cart/1")).body.items.length, 1);
   await request(app).post("/checkout/1").send({ couponCode: "UNKNOWN" }).expect(400);
 });
+
+test("a date-only validUntil remains valid through the end of that day", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-15T23:59:59.999Z"));
+  await request(app).post("/coupons").send({
+    code: "LASTDAY", type: "fixed", value: 10,
+    validFrom: "2026-06-15", validUntil: "2026-06-15", minimumAmount: 0, categoryIds: [],
+  }).expect(201);
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  const checkout = await request(app).post("/checkout/1").send({ couponCode: "LASTDAY" }).expect(201);
+  assert.equal(checkout.body.discount, 10);
+});

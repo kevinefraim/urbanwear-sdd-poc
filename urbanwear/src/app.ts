@@ -14,6 +14,13 @@ type Coupon = {
 };
 
 const money = (amount: number) => Number(amount.toFixed(2));
+const couponDate = (value: unknown, endOfDay = false): Date | undefined => {
+  if (typeof value !== "string") return undefined;
+  const date = new Date(endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T23:59:59.999Z`
+    : value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+};
 
 export function createApp(db: Db, clock: Clock = createClock()) {
   const app = express();
@@ -66,12 +73,12 @@ export function createApp(db: Db, clock: Clock = createClock()) {
 
   app.post("/coupons", (req, res) => {
     const { code, type, value, validFrom, validUntil, minimumAmount, categoryIds } = req.body ?? {};
-    const from = typeof validFrom === "string" ? new Date(validFrom) : undefined;
-    const until = typeof validUntil === "string" ? new Date(validUntil) : undefined;
+    const from = couponDate(validFrom);
+    const until = couponDate(validUntil, true);
     const valid = typeof code === "string" && Boolean(code.trim())
       && (type === "percentage" || type === "fixed")
       && typeof value === "number" && Number.isFinite(value) && value > 0
-      && from && !Number.isNaN(from.getTime()) && until && !Number.isNaN(until.getTime()) && from <= until
+      && from && until && from <= until
       && typeof minimumAmount === "number" && Number.isFinite(minimumAmount) && minimumAmount >= 0
       && Array.isArray(categoryIds) && categoryIds.every(Number.isInteger)
       && new Set(categoryIds).size === categoryIds.length
