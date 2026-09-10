@@ -28,6 +28,16 @@ function migrateCouponUsages(db: Db): void {
   })();
 }
 
+function createCouponAllowedUsers(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS coupon_allowed_users (
+      coupon_id INTEGER NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      PRIMARY KEY (coupon_id, user_id)
+    );
+  `);
+}
+
 export function createDatabase(filename = ":memory:"): Db {
   const db = new Database(filename);
   db.pragma("foreign_keys = ON");
@@ -84,6 +94,7 @@ export function createDatabase(filename = ":memory:"): Db {
     );
   `);
   migrateCouponUsages(db);
+  createCouponAllowedUsers(db);
   db.exec("CREATE INDEX IF NOT EXISTS coupon_usages_coupon_user_used_at ON coupon_usages (coupon_id, user_id, used_at)");
   return db;
 }

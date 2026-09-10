@@ -121,6 +121,48 @@ test("coupons apply only to eligible categories and can be retrieved", async (t)
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM coupon_usages").get() as { count: number }).count, 1);
 });
 
+test("segmented coupons can be used only by their allowed customers", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-01T12:00:00.000Z"));
+  const coupon = {
+    code: "ANAONLY", type: "fixed", value: 10,
+    validFrom: "2026-06-01", validUntil: "2026-06-02", minimumAmount: 0,
+    categoryIds: [], allowedUserIds: [1, 1],
+  };
+
+  const created = await request(app).post("/coupons").send(coupon).expect(201);
+  assert.deepEqual(created.body.allowedUserIds, [1]);
+  const fetched = await request(app).get("/coupons/ANAONLY").expect(200);
+  assert.deepEqual(fetched.body.allowedUserIds, [1]);
+
+  await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
+  const rejected = await request(app).post("/checkout/2").send({ couponCode: "ANAONLY" }).expect(400);
+  assert.equal(rejected.body.error, "Coupon is not available for this user");
+  assert.equal((await request(app).get("/cart/2")).body.items.length, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM orders").get() as { count: number }).count, 0);
+
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "ANAONLY" }).expect(201);
+  await request(app).post("/coupons").send({ ...coupon, code: "UNKNOWN", allowedUserIds: [999] }).expect(400);
+});
+
+test("coupons without allowed users remain general", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  const app = createApp(db, createClock("2026-06-01T12:00:00.000Z"));
+  const payload = {
+    code: "GENERAL", type: "fixed", value: 10,
+    validFrom: "2026-06-01", validUntil: "2026-06-02", minimumAmount: 0, categoryIds: [],
+  };
+  const created = await request(app).post("/coupons").send(payload).expect(201);
+  assert.deepEqual(created.body.allowedUserIds, []);
+  await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/2").send({ couponCode: "GENERAL" }).expect(201);
+});
+
 test("coupon daily use is limited per user and fixed discounts are capped", async (t) => {
   const db = createDatabase();
   seedDatabase(db);
