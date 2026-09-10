@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { createClock } from "../src/clock.js";
@@ -63,6 +64,39 @@ test("environment configuration and reset seed are reproducible", async (t) => {
   assert.equal(order.created_at, "2026-01-02 03:04:05");
 });
 
+test("opening a V1 database preserves coupon usage history in the V2 schema", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "urbanwear-v1-"));
+  const filename = join(directory, "urbanwear.db");
+  const legacy = new Database(filename);
+  legacy.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE);
+    CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+    CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL NOT NULL, category_id INTEGER NOT NULL REFERENCES categories(id));
+    CREATE TABLE cart_items (user_id INTEGER NOT NULL, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL, PRIMARY KEY (user_id, product_id));
+    CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), subtotal REAL NOT NULL, total REAL NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE coupons (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, type TEXT NOT NULL, value REAL NOT NULL, valid_from TEXT NOT NULL, valid_until TEXT NOT NULL, minimum_amount REAL NOT NULL);
+    CREATE TABLE coupon_categories (coupon_id INTEGER NOT NULL, category_id INTEGER NOT NULL, PRIMARY KEY (coupon_id, category_id));
+    CREATE TABLE coupon_usages (coupon_id INTEGER NOT NULL REFERENCES coupons(id), user_id INTEGER NOT NULL REFERENCES users(id), order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id), PRIMARY KEY (coupon_id, user_id));
+    INSERT INTO users VALUES (1, 'Ana', 'ana@example.com');
+    INSERT INTO categories VALUES (1, 'Zapatillas');
+    INSERT INTO coupons VALUES (1, 'LEGACY', 'fixed', 10, '2026-01-01T00:00:00.000Z', '2026-12-31T23:59:59.999Z', 0);
+    INSERT INTO orders VALUES (1, 1, 100, 90, '2026-06-01 12:34:56');
+    INSERT INTO coupon_usages VALUES (1, 1, 1);
+  `);
+  legacy.close();
+
+  const db = createDatabase(filename);
+  t.after(() => {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const history = db.prepare("SELECT id, coupon_id AS couponId, user_id AS userId, order_id AS orderId, used_at AS usedAt FROM coupon_usages").get() as {
+    id: number; couponId: number; userId: number; orderId: number; usedAt: string;
+  };
+  assert.deepEqual(history, { id: 1, couponId: 1, userId: 1, orderId: 1, usedAt: "2026-06-01T12:34:56.000Z" });
+});
+
 test("coupons apply only to eligible categories and can be retrieved", async (t) => {
   const db = createDatabase();
   seedDatabase(db);
@@ -87,7 +121,7 @@ test("coupons apply only to eligible categories and can be retrieved", async (t)
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM coupon_usages").get() as { count: number }).count, 1);
 });
 
-test("coupon use is limited per user and fixed discounts are capped", async (t) => {
+test("coupon daily use is limited per user and fixed discounts are capped", async (t) => {
   const db = createDatabase();
   seedDatabase(db);
   t.after(() => db.close());
@@ -107,6 +141,44 @@ test("coupon use is limited per user and fixed discounts are capped", async (t) 
   assert.equal((await request(app).get("/cart/1")).body.items.length, 1);
   await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
   await request(app).post("/checkout/2").send({ couponCode: "CAP" }).expect(201);
+});
+
+test("coupon reuse is limited to one successful use per UTC day and three total uses", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  let now = new Date("2026-06-01T23:30:00.000Z");
+  const app = createApp(db, { now: () => new Date(now.getTime()) });
+  await request(app).post("/coupons").send({
+    code: "REUSE", type: "fixed", value: 10,
+    validFrom: "2026-06-01", validUntil: "2026-06-10", minimumAmount: 100, categoryIds: [],
+  }).expect(201);
+
+  // A rejected checkout neither creates an order nor consumes a future coupon use.
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "REUSE" }).expect(400);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM coupon_usages").get() as { count: number }).count, 0);
+  await request(app).post("/cart/1/items").send({ productId: 2, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "REUSE" }).expect(201);
+
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 2 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "REUSE" }).expect(400);
+  assert.equal((await request(app).get("/cart/1")).body.items.length, 1);
+
+  now = new Date("2026-06-02T00:00:00.000Z");
+  await request(app).post("/checkout/1").send({ couponCode: "REUSE" }).expect(201);
+  now = new Date("2026-06-03T12:00:00.000Z");
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 2 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "REUSE" }).expect(201);
+
+  now = new Date("2026-06-04T12:00:00.000Z");
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 2 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "REUSE" }).expect(400);
+  const usages = db.prepare("SELECT order_id AS orderId, used_at AS usedAt FROM coupon_usages WHERE coupon_id = 1 ORDER BY id").all() as Array<{ orderId: number; usedAt: string }>;
+  assert.deepEqual(usages.map((usage) => usage.orderId), [1, 2, 3]);
+  assert.deepEqual(usages.map((usage) => usage.usedAt), [
+    "2026-06-01T23:30:00.000Z", "2026-06-02T00:00:00.000Z", "2026-06-03T12:00:00.000Z",
+  ]);
 });
 
 test("coupon validation preserves the cart when a coupon cannot apply", async (t) => {

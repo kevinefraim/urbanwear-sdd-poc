@@ -3,6 +3,31 @@ import { rmSync } from "node:fs";
 
 export type Db = Database.Database;
 
+function migrateCouponUsages(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(coupon_usages)").all() as Array<{ name: string }>;
+  const hasCurrentSchema = columns.some((column) => column.name === "id") && columns.some((column) => column.name === "used_at");
+  if (hasCurrentSchema) return;
+
+  db.transaction(() => {
+    db.exec("ALTER TABLE coupon_usages RENAME TO coupon_usages_legacy");
+    db.exec(`
+      CREATE TABLE coupon_usages (
+        id INTEGER PRIMARY KEY,
+        coupon_id INTEGER NOT NULL REFERENCES coupons(id),
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+        used_at TEXT NOT NULL
+      );
+      INSERT INTO coupon_usages (coupon_id, user_id, order_id, used_at)
+      SELECT usage.coupon_id, usage.user_id, usage.order_id,
+             COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', orders.created_at), '1970-01-01T00:00:00.000Z')
+      FROM coupon_usages_legacy usage
+      LEFT JOIN orders ON orders.id = usage.order_id;
+      DROP TABLE coupon_usages_legacy;
+    `);
+  })();
+}
+
 export function createDatabase(filename = ":memory:"): Db {
   const db = new Database(filename);
   db.pragma("foreign_keys = ON");
@@ -51,12 +76,15 @@ export function createDatabase(filename = ":memory:"): Db {
       PRIMARY KEY (coupon_id, category_id)
     );
     CREATE TABLE IF NOT EXISTS coupon_usages (
+      id INTEGER PRIMARY KEY,
       coupon_id INTEGER NOT NULL REFERENCES coupons(id),
       user_id INTEGER NOT NULL REFERENCES users(id),
       order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
-      PRIMARY KEY (coupon_id, user_id)
+      used_at TEXT NOT NULL
     );
   `);
+  migrateCouponUsages(db);
+  db.exec("CREATE INDEX IF NOT EXISTS coupon_usages_coupon_user_used_at ON coupon_usages (coupon_id, user_id, used_at)");
   return db;
 }
 
