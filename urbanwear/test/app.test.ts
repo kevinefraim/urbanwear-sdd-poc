@@ -273,3 +273,65 @@ test("a date-only validUntil remains valid through its entire UTC calendar day",
   const checkout = await request(app).post("/checkout/1").send({ couponCode: "LASTDAY" }).expect(201);
   assert.equal(checkout.body.discount, 10);
 });
+
+test("PATCH updates a coupon in place, preserves its history, and enforces active and maxUsesPerUser", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  let now = new Date("2026-06-01T12:00:00.000Z");
+  const app = createApp(db, { now: () => new Date(now.getTime()) });
+  await request(app).post("/coupons").send({
+    code: "EDITABLE", type: "fixed", value: 10, validFrom: "2026-06-01", validUntil: "2026-06-10",
+    minimumAmount: 0, categoryIds: [],
+  }).expect(201);
+
+  const changed = await request(app).patch("/coupons/EDITABLE").send({ maxUsesPerUser: 1 }).expect(200);
+  assert.equal(changed.body.code, "EDITABLE");
+  assert.equal(changed.body.maxUsesPerUser, 1);
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "EDITABLE" }).expect(201);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM coupon_usages WHERE coupon_id = 1").get() as { count: number }).count, 1);
+
+  now = new Date("2026-06-02T12:00:00.000Z");
+  await request(app).post("/cart/1/items").send({ productId: 1, quantity: 1 }).expect(201);
+  await request(app).post("/checkout/1").send({ couponCode: "EDITABLE" }).expect(400);
+  await request(app).patch("/coupons/EDITABLE").send({ active: false }).expect(200);
+  await request(app).post("/cart/2/items").send({ productId: 1, quantity: 1 }).expect(201);
+  const inactive = await request(app).post("/checkout/2").send({ couponCode: "EDITABLE" }).expect(400);
+  assert.equal(inactive.body.error, "Coupon is not currently active");
+  assert.equal((await request(app).get("/cart/2")).body.items.length, 1);
+  await request(app).patch("/coupons/EDITABLE").send({ maxUsesPerUser: 0 }).expect(400);
+  await request(app).patch("/coupons/EDITABLE").send({ code: "RENAMED" }).expect(400);
+});
+
+test("PATCH accumulates scheduled revisions and exposes only the effective configuration", async (t) => {
+  const db = createDatabase();
+  seedDatabase(db);
+  t.after(() => db.close());
+  let now = new Date("2026-06-01T12:00:00.000Z");
+  const app = createApp(db, { now: () => new Date(now.getTime()) });
+  await request(app).post("/coupons").send({
+    code: "SCHEDULED", type: "fixed", value: 10, validFrom: "2026-06-01", validUntil: "2026-06-10",
+    minimumAmount: 0, categoryIds: [], allowedUserIds: [],
+  }).expect(201);
+  await request(app).patch("/coupons/SCHEDULED").send({
+    effectiveFrom: "2026-06-03T00:00:00.000Z", value: 20, minimumAmount: 50,
+  }).expect(200);
+  await request(app).patch("/coupons/SCHEDULED").send({
+    effectiveFrom: "2026-06-03T00:00:00.000Z", categoryIds: [2, 2], allowedUserIds: [2],
+  }).expect(200);
+  const before = await request(app).get("/coupons/SCHEDULED").expect(200);
+  assert.equal(before.body.value, 10);
+  assert.deepEqual(before.body.categoryIds, []);
+  assert.equal(before.body.scheduledChanges, undefined);
+
+  now = new Date("2026-06-03T00:00:00.000Z");
+  const effective = await request(app).get("/coupons/SCHEDULED").expect(200);
+  assert.equal(effective.body.value, 20);
+  assert.equal(effective.body.minimumAmount, 50);
+  assert.deepEqual(effective.body.categoryIds, [2]);
+  assert.deepEqual(effective.body.allowedUserIds, [2]);
+  await request(app).post("/cart/2/items").send({ productId: 4, quantity: 1 }).expect(201);
+  const checkout = await request(app).post("/checkout/2").send({ couponCode: "SCHEDULED" }).expect(201);
+  assert.equal(checkout.body.discount, 20);
+});

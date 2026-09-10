@@ -13,10 +13,12 @@ type Coupon = {
   minimumAmount: number;
   categoryIds: number[];
   allowedUserIds: number[];
+  active: boolean;
+  maxUsesPerUser: number;
 };
 
-const MAX_COUPON_USES_PER_USER = 3;
 const MAX_COUPON_USES_PER_USER_PER_UTC_DAY = 1;
+type CouponPatch = Partial<Omit<Coupon, "id" | "code">>;
 
 function roundMoney(value: number): number {
   return Number(value.toFixed(2));
@@ -44,10 +46,11 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     FROM cart_items ci JOIN products p ON p.id = ci.product_id
     WHERE ci.user_id = ? ORDER BY p.id
   `).all(userId) as Array<{ price: number; categoryId: number; quantity: number }>;
-  const couponByCode = (code: string): Coupon | undefined => {
+  const couponByCode = (code: string, at = clock.now()): Coupon | undefined => {
     const row = db.prepare(`
       SELECT id, code, type, value, valid_from AS validFrom,
-             valid_until AS validUntil, minimum_amount AS minimumAmount
+             valid_until AS validUntil, minimum_amount AS minimumAmount,
+             active, max_uses_per_user AS maxUsesPerUser
       FROM coupons WHERE code = ?
     `).get(code) as Omit<Coupon, "categoryIds" | "allowedUserIds"> | undefined;
     if (!row) return undefined;
@@ -55,7 +58,18 @@ export function createApp(db: Db, clock: Clock = createClock()) {
       .all(row.id) as Array<{ id: number }>;
     const allowedUserIds = db.prepare("SELECT user_id AS id FROM coupon_allowed_users WHERE coupon_id = ? ORDER BY user_id")
       .all(row.id) as Array<{ id: number }>;
-    return { ...row, categoryIds: categoryIds.map((category) => category.id), allowedUserIds: allowedUserIds.map((user) => user.id) };
+    let coupon: Coupon = {
+      ...row,
+      active: Boolean(row.active),
+      categoryIds: categoryIds.map((category) => category.id),
+      allowedUserIds: allowedUserIds.map((user) => user.id),
+    };
+    const revisions = db.prepare(`SELECT patch_json AS patchJson FROM coupon_revisions
+      WHERE coupon_id = ? AND effective_from <= ? ORDER BY effective_from, id`).all(row.id, at.toISOString()) as Array<{ patchJson: string }>;
+    for (const revision of revisions) {
+      coupon = { ...coupon, ...JSON.parse(revision.patchJson) as CouponPatch };
+    }
+    return coupon;
   };
   const parseTimestamp = (value: unknown, endOfDay = false): string | undefined => {
     if (typeof value !== "string" || !value.trim()) return undefined;
@@ -63,6 +77,12 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     const date = new Date(dateOnly && endOfDay ? `${value}T23:59:59.999Z` : value);
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   };
+  const validCouponConfiguration = (coupon: Omit<Coupon, "id" | "code">): boolean =>
+    (coupon.type === "percentage" || coupon.type === "fixed") && Number.isFinite(coupon.value) && coupon.value > 0 &&
+    (coupon.type !== "percentage" || (coupon.value >= 1 && coupon.value <= 100)) &&
+    Boolean(parseTimestamp(coupon.validFrom)) && Boolean(parseTimestamp(coupon.validUntil, true)) &&
+    coupon.validFrom <= coupon.validUntil && Number.isFinite(coupon.minimumAmount) && coupon.minimumAmount >= 0 &&
+    typeof coupon.active === "boolean" && Number.isInteger(coupon.maxUsesPerUser) && coupon.maxUsesPerUser > 0;
 
   app.get("/products", (_req, res) => {
     const products = db.prepare("SELECT id, name, price, category_id AS categoryId FROM products ORDER BY id").all();
@@ -89,7 +109,7 @@ export function createApp(db: Db, clock: Clock = createClock()) {
   });
 
   app.post("/coupons", (req, res) => {
-    const { code, type, value, validFrom, validUntil, minimumAmount, categoryIds, allowedUserIds } = req.body ?? {};
+    const { code, type, value, validFrom, validUntil, minimumAmount, categoryIds, allowedUserIds, active = true, maxUsesPerUser = 3 } = req.body ?? {};
     const normalizedCode = typeof code === "string" ? code.trim() : "";
     const from = parseTimestamp(validFrom);
     const until = parseTimestamp(validUntil, true);
@@ -99,7 +119,8 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     const distinctAllowedUserIds = allowedUserIds === undefined ? [] : [...new Set(allowedUserIds as number[])];
     if (!normalizedCode || (type !== "percentage" && type !== "fixed") || !Number.isFinite(value) || value <= 0 ||
       (type === "percentage" && (value < 1 || value > 100)) ||
-      !from || !until || from > until || !Number.isFinite(minimumAmount) || minimumAmount < 0 || !validCategories || !validAllowedUsers) {
+      !from || !until || from > until || !Number.isFinite(minimumAmount) || minimumAmount < 0 || !validCategories || !validAllowedUsers ||
+      typeof active !== "boolean" || !Number.isInteger(maxUsesPerUser) || maxUsesPerUser <= 0) {
       return res.status(400).json({ error: "Invalid coupon fields" });
     }
     const categoryCount = distinctCategoryIds.length === 0 ? 0 : (db.prepare(`SELECT COUNT(*) AS count FROM categories WHERE id IN (${distinctCategoryIds.map(() => "?").join(",")})`)
@@ -110,9 +131,9 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     if (allowedUserCount !== distinctAllowedUserIds.length) return res.status(400).json({ error: "One or more allowed users do not exist" });
     try {
       const createCoupon = db.transaction(() => {
-        const result = db.prepare(`INSERT INTO coupons (code, type, value, valid_from, valid_until, minimum_amount)
-          VALUES (?, ?, ?, ?, ?, ?)`)
-          .run(normalizedCode, type, value, from, until, minimumAmount);
+        const result = db.prepare(`INSERT INTO coupons (code, type, value, valid_from, valid_until, minimum_amount, active, max_uses_per_user)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(normalizedCode, type, value, from, until, minimumAmount, active ? 1 : 0, maxUsesPerUser);
         const couponId = Number(result.lastInsertRowid);
         const addCategory = db.prepare("INSERT INTO coupon_categories (coupon_id, category_id) VALUES (?, ?)");
         for (const categoryId of distinctCategoryIds) addCategory.run(couponId, categoryId);
@@ -130,6 +151,64 @@ export function createApp(db: Db, clock: Clock = createClock()) {
     const coupon = couponByCode(req.params.code);
     if (!coupon) return res.status(404).json({ error: "Coupon not found" });
     res.json(coupon);
+  });
+
+  app.patch("/coupons/:code", (req, res) => {
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return res.status(400).json({ error: "Invalid coupon fields" });
+    const editable = ["type", "value", "validFrom", "validUntil", "minimumAmount", "categoryIds", "allowedUserIds", "active", "maxUsesPerUser"] as const;
+    const keys = Object.keys(body);
+    if (keys.length === 0 || keys.some((key) => key !== "effectiveFrom" && !editable.includes(key as typeof editable[number]))) {
+      return res.status(400).json({ error: "Invalid coupon fields" });
+    }
+    const patch: CouponPatch = {};
+    if ("type" in body) patch.type = body.type;
+    if ("value" in body) patch.value = body.value;
+    if ("validFrom" in body) {
+      const timestamp = parseTimestamp(body.validFrom);
+      if (!timestamp) return res.status(400).json({ error: "Invalid coupon fields" });
+      patch.validFrom = timestamp;
+    }
+    if ("validUntil" in body) {
+      const timestamp = parseTimestamp(body.validUntil, true);
+      if (!timestamp) return res.status(400).json({ error: "Invalid coupon fields" });
+      patch.validUntil = timestamp;
+    }
+    if ("minimumAmount" in body) patch.minimumAmount = body.minimumAmount;
+    if ("active" in body) patch.active = body.active;
+    if ("maxUsesPerUser" in body) patch.maxUsesPerUser = body.maxUsesPerUser;
+    for (const field of ["categoryIds", "allowedUserIds"] as const) {
+      if (!(field in body)) continue;
+      const values = body[field];
+      if (!Array.isArray(values) || !values.every(Number.isInteger)) return res.status(400).json({ error: "Invalid coupon fields" });
+      patch[field] = [...new Set(values)] as never;
+    }
+    const effectiveFrom = "effectiveFrom" in body ? parseTimestamp(body.effectiveFrom) : clock.now().toISOString();
+    if (!effectiveFrom) return res.status(400).json({ error: "Invalid coupon fields" });
+    const existing = couponByCode(req.params.code, new Date(effectiveFrom));
+    if (!existing) return res.status(404).json({ error: "Coupon not found" });
+    const categoryIds = patch.categoryIds;
+    if (categoryIds && categoryIds.length > 0) {
+      const count = (db.prepare(`SELECT COUNT(*) AS count FROM categories WHERE id IN (${categoryIds.map(() => "?").join(",")})`).get(...categoryIds) as { count: number }).count;
+      if (count !== categoryIds.length) return res.status(400).json({ error: "One or more categories do not exist" });
+    }
+    const allowedUserIds = patch.allowedUserIds;
+    if (allowedUserIds && allowedUserIds.length > 0) {
+      const count = (db.prepare(`SELECT COUNT(*) AS count FROM users WHERE id IN (${allowedUserIds.map(() => "?").join(",")})`).get(...allowedUserIds) as { count: number }).count;
+      if (count !== allowedUserIds.length) return res.status(400).json({ error: "One or more allowed users do not exist" });
+    }
+    let candidate = { ...existing, ...patch };
+    if (!validCouponConfiguration(candidate)) return res.status(400).json({ error: "Invalid coupon fields" });
+    // A newly inserted past/future revision must not make a later stored revision invalid.
+    const laterRevisions = db.prepare(`SELECT patch_json AS patchJson FROM coupon_revisions
+      WHERE coupon_id = ? AND effective_from > ? ORDER BY effective_from, id`).all(existing.id, effectiveFrom) as Array<{ patchJson: string }>;
+    for (const revision of laterRevisions) {
+      candidate = { ...candidate, ...JSON.parse(revision.patchJson) as CouponPatch };
+      if (!validCouponConfiguration(candidate)) return res.status(400).json({ error: "Invalid coupon fields" });
+    }
+    db.prepare("INSERT INTO coupon_revisions (coupon_id, effective_from, patch_json) VALUES (?, ?, ?)")
+      .run(existing.id, effectiveFrom, JSON.stringify(patch));
+    res.json(couponByCode(req.params.code)!);
   });
 
   app.get("/cart/:userId", (req, res) => {
@@ -167,19 +246,20 @@ export function createApp(db: Db, clock: Clock = createClock()) {
       let coupon: Coupon | undefined;
       let couponUsedAt: Date | undefined;
       if (requestedCouponCode) {
-        coupon = couponByCode(requestedCouponCode);
-        if (!coupon) throw new Error("Coupon not found");
         couponUsedAt = clock.now();
+        coupon = couponByCode(requestedCouponCode, couponUsedAt);
+        if (!coupon) throw new Error("Coupon not found");
         const now = couponUsedAt.getTime();
         const validFrom = new Date(coupon.validFrom).getTime();
         const validUntil = new Date(coupon.validUntil).getTime();
         if (now < validFrom || now > validUntil) throw new Error("Coupon is not currently valid");
+        if (!coupon.active) throw new Error("Coupon is not currently active");
         if (coupon.allowedUserIds.length > 0 && !coupon.allowedUserIds.includes(userId)) {
           throw new Error("Coupon is not available for this user");
         }
         const totalUsages = db.prepare("SELECT COUNT(*) AS count FROM coupon_usages WHERE coupon_id = ? AND user_id = ?")
           .get(coupon.id, userId) as { count: number };
-        if (totalUsages.count >= MAX_COUPON_USES_PER_USER) {
+        if (totalUsages.count >= coupon.maxUsesPerUser) {
           throw new Error("Coupon usage limit reached for this user");
         }
         const day = utcDayBounds(couponUsedAt);

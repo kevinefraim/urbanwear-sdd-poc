@@ -38,6 +38,26 @@ function createCouponAllowedUsers(db: Db): void {
   `);
 }
 
+function migrateCouponConfiguration(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(coupons)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "active")) {
+    db.exec("ALTER TABLE coupons ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1))");
+  }
+  if (!columns.some((column) => column.name === "max_uses_per_user")) {
+    db.exec("ALTER TABLE coupons ADD COLUMN max_uses_per_user INTEGER NOT NULL DEFAULT 3 CHECK(max_uses_per_user > 0)");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS coupon_revisions (
+      id INTEGER PRIMARY KEY,
+      coupon_id INTEGER NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+      effective_from TEXT NOT NULL,
+      patch_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS coupon_revisions_coupon_effective
+      ON coupon_revisions (coupon_id, effective_from, id);
+  `);
+}
+
 export function createDatabase(filename = ":memory:"): Db {
   const db = new Database(filename);
   db.pragma("foreign_keys = ON");
@@ -78,6 +98,8 @@ export function createDatabase(filename = ":memory:"): Db {
       valid_from TEXT NOT NULL,
       valid_until TEXT NOT NULL,
       minimum_amount REAL NOT NULL CHECK(minimum_amount >= 0),
+      active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+      max_uses_per_user INTEGER NOT NULL DEFAULT 3 CHECK(max_uses_per_user > 0),
       CHECK(valid_from <= valid_until)
     );
     CREATE TABLE IF NOT EXISTS coupon_categories (
@@ -95,6 +117,7 @@ export function createDatabase(filename = ":memory:"): Db {
   `);
   migrateCouponUsages(db);
   createCouponAllowedUsers(db);
+  migrateCouponConfiguration(db);
   db.exec("CREATE INDEX IF NOT EXISTS coupon_usages_coupon_user_used_at ON coupon_usages (coupon_id, user_id, used_at)");
   return db;
 }
