@@ -10,13 +10,13 @@ El proyecto fija pnpm `12.3.4` mediante Corepack. Para ejecutar las pruebas de
 forma reproducible, usar `corepack pnpm test`; una vez preparada esa versión,
 Corepack no necesita consultar el registro para elegir una versión de pnpm.
 
-The following environment variables make local runs reproducible:
+Las siguientes variables de entorno hacen reproducibles las ejecuciones locales:
 
-- `PORT` (default: `3000`)
-- `DATABASE_PATH` (default: `urbanwear.db`)
-- `TEST_NOW` (optional fixed timestamp provided by the shared application clock)
+- `PORT` (valor predeterminado: `3000`)
+- `DATABASE_PATH` (valor predeterminado: `urbanwear.db`)
+- `TEST_NOW` (marca de tiempo fija opcional proporcionada por el reloj compartido de la aplicación)
 
-For example:
+Por ejemplo:
 
 ```powershell
 $env:PORT = '3100'
@@ -26,4 +26,4 @@ pnpm reset:seed
 pnpm start
 ```
 
-`pnpm reset:seed` removes the configured SQLite database (and its SQLite journal files) and reloads the two users, two categories, and five products defined for V0.
+`pnpm reset:seed` elimina la base de datos SQLite configurada (y sus archivos de diario) y vuelve a cargar los dos usuarios, las dos categorías y los cinco productos definidos para V0.
